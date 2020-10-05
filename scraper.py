@@ -1,14 +1,85 @@
 import requests
 from bs4 import BeautifulSoup
+import os
+from dotenv import load_dotenv
+import tabulate
+import psycopg2
+
+load_dotenv(dotenv_path="./")
 
 
 # TODO: use regex and refactor the code
-# TODO: use postgresql db to store scraped data
 # TODO: use auto-increment id and timestamps while inserting records
 
 
-class ScrapeWikiData:
+class DB:
+    def __init__(self):
+        self.__POSTGRES_DB = os.getenv("POSTGRES_DB")
+        self.__POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+        self.__POSTGRES_USER = os.getenv("POSTGRES_USER")
+        self.__connect()
+
+    def __connect(self):
+        try:
+            self.connection = psycopg2.connect(user=self.__POSTGRES_USER,
+                                               password=self.__POSTGRES_PASSWORD,
+                                               host="127.0.0.1",
+                                               port="5432",
+                                               database=self.__POSTGRES_DB)
+            self.cursor = self.connection.cursor()
+            print("connected to db successfully")
+        except (Exception, psycopg2.Error) as error:
+            print("failed to connect to db", error)
+
+    def __create_tables(self):
+        if not self.connection:
+            return
+        queries = []
+        # * tables creation
+        for query in queries:
+            query_text, table_name = query
+            self.cursor.execute(query_text)
+            self.connection.commit()
+            print(f"Table {table_name} created successfully in PostgreSQL ")
+
+    def __close_connection(self):
+        if not self.connection:
+            return
+
+        self.cursor.close()
+        self.connection.close()
+        print("PostgreSQL connection is closed")
+
+    def __check_existence(self, column_name, column_value, table_name):
+        check_query = f"SELECT {column_name} FROM {table_name} WHERE {column_name} == {column_value}"
+        self.cursor.execute(check_query)
+        return len(self.cursor.fetchall()) != 0
+
+    def __drop_tables(self, tables_names):
+        for table_name in tables_names:
+            drop_table_query = f"DROP TABLE IF EXISTS {table_name} CASCADE"
+            self.cursor.execute(drop_table_query)
+            self.connection.commit()
+            print(f"table {table_name} dropped")
+
+    def __get_data(self, table_name):
+        if not self.connection:
+            return
+
+        row_select_query = f"SELECT * FROM {table_name}"
+        self.cursor.execute(row_select_query)
+        rows = [row[0] for row in self.cursor.fetchall()]
+        columns_select_query = f"SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}';"
+        self.cursor.execute(columns_select_query)
+        columns = [col[0] for col in self.cursor.fetchall()]
+        print("=" * 28, f"@ rows in {table_name} table @", "=" * 28)
+        print(tabulate.tabulate(rows, headers=columns, tablefmt="psql"))
+        print("\n")
+
+
+class ScrapeWikiData(DB):
     def __init__(self, source_code):
+        super().__init__()
         self.source_code = source_code
 
     def __call__(self, page_url):
