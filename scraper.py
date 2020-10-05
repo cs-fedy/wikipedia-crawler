@@ -9,7 +9,6 @@ load_dotenv(dotenv_path="./")
 
 
 # TODO: use regex and refactor the code
-# TODO: use auto-increment id and timestamps while inserting records
 
 
 class DB:
@@ -17,9 +16,13 @@ class DB:
         self.__POSTGRES_DB = os.getenv("POSTGRES_DB")
         self.__POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
         self.__POSTGRES_USER = os.getenv("POSTGRES_USER")
-        self.__connect()
+        self.connection = None
+        self.cursor = None
+        self.connect()
+        self.drop_tables(["page", "link", "file"])
+        self.create_tables()
 
-    def __connect(self):
+    def connect(self):
         try:
             self.connection = psycopg2.connect(user=self.__POSTGRES_USER,
                                                password=self.__POSTGRES_PASSWORD,
@@ -31,10 +34,44 @@ class DB:
         except (Exception, psycopg2.Error) as error:
             print("failed to connect to db", error)
 
-    def __create_tables(self):
+    def create_tables(self):
         if not self.connection:
             return
+
         queries = []
+        # page(page_id_, page_url, added_in, content)
+        page_table_query = """
+            CREATE TABLE page(
+                page_id SERIAL PRIMARY KEY,
+                page_url TEXT,
+                page_title TEXT,
+                page_content TEXT,
+                added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP); 
+        """
+        queries.append((page_table_query, "page"))
+
+        # link(link_id, page_id*, link, added_in)
+        link_table_query = """
+            CREATE TABLE link(
+                link_id SERIAL PRIMARY KEY,
+                page_id INT,
+                link VARCHAR(255),
+                added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (page_id) REFERENCES page(page_id)); 
+        """
+        queries.append((link_table_query, "link"))
+
+        # file(file_id, page_id*, file_url, added_in)
+        file_table_query = """
+            CREATE TABLE file(
+                file_id SERIAL PRIMARY KEY,
+                page_id INT,
+                file_url VARCHAR(255),
+                added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (page_id) REFERENCES page(page_id)); 
+        """
+        queries.append((file_table_query, "file"))
+
         # * tables creation
         for query in queries:
             query_text, table_name = query
@@ -42,7 +79,49 @@ class DB:
             self.connection.commit()
             print(f"Table {table_name} created successfully in PostgreSQL ")
 
-    def __close_connection(self):
+    def seed_page_table(self, record):
+        if not self.connection:
+            return
+
+        title, page_url, first_paragraph, files = record.values()
+        seeding_page_query = """ 
+                INSERT INTO page (page_title, page_url, page_content)  
+                VALUES (%s, %s, %s)
+        """
+        self.cursor.execute(seeding_page_query, (title, page_url, first_paragraph))
+        page_id = self.cursor.fetchone()[0]
+        self.connection.commit()
+
+        # seed file table with files
+        self.seed_file_table(page_id, files)
+        print(f"seeding page table with {title} details done")
+        return page_id
+
+    def seed_link_table(self, page_id, link):
+        if not self.connection:
+            return
+
+        seeding_link_query = """ 
+                INSERT INTO link (page_id, link)  
+                VALUES (%d, %s)
+        """
+        self.cursor.execute(seeding_link_query, (page_id, link))
+        self.connection.commit()
+        print(f"seeding link table with {link}")
+
+    def seed_file_table(self, page_id, file):
+        if not self.connection:
+            return
+
+        seeding_file_query = """ 
+                INSERT INTO file (page_id, link)  
+                VALUES (%d, %s)
+        """
+        self.cursor.execute(seeding_file_query, (page_id, file))
+        self.connection.commit()
+        print(f"seeding link file with {file}")
+
+    def close_connection(self):
         if not self.connection:
             return
 
@@ -50,19 +129,14 @@ class DB:
         self.connection.close()
         print("PostgreSQL connection is closed")
 
-    def __check_existence(self, column_name, column_value, table_name):
-        check_query = f"SELECT {column_name} FROM {table_name} WHERE {column_name} == {column_value}"
-        self.cursor.execute(check_query)
-        return len(self.cursor.fetchall()) != 0
-
-    def __drop_tables(self, tables_names):
+    def drop_tables(self, tables_names):
         for table_name in tables_names:
             drop_table_query = f"DROP TABLE IF EXISTS {table_name} CASCADE"
             self.cursor.execute(drop_table_query)
             self.connection.commit()
             print(f"table {table_name} dropped")
 
-    def __get_data(self, table_name):
+    def get_data(self, table_name):
         if not self.connection:
             return
 
@@ -77,9 +151,8 @@ class DB:
         print("\n")
 
 
-class ScrapeWikiData(DB):
+class ScrapeWikiData:
     def __init__(self, source_code):
-        super().__init__()
         self.source_code = source_code
 
     def __call__(self, page_url):
@@ -103,13 +176,14 @@ class ScrapeWikiData(DB):
         }
 
 
-class WikiCrawler:
+class WikiCrawler(DB):
     def __init__(self, page_url):
         self.page_url = page_url
         self.csv_file_path = r"assets/data.csv"
         self.internal_link = set()
         self.external_link = set()
-        self.recursion_limit = 500
+        self.recursion_limit = 1
+        DB.__init__(self)
         self.__get_urls()
 
     @staticmethod
@@ -129,7 +203,7 @@ class WikiCrawler:
         # collect data from current page
         sdw = ScrapeWikiData(soup)
         scraped_data = sdw(page_url)
-        print(scraped_data)
+        page_id = self.seed_page_table(scraped_data)
         print(f"@@@ scraping {page_url} done")
         for link in soup.select("#mw-content-text .mw-parser-output a"):
             if "href" not in link.attrs:
@@ -141,6 +215,7 @@ class WikiCrawler:
                 new_article_url = f"https://en.wikipedia.org{link['href']}"
                 if new_article_url not in self.internal_link:
                     self.internal_link.add(new_article_url)
+                    self.seed_link_table(page_id, new_article_url)
                     if recursion_depth < self.recursion_limit:
                         self.__get_urls(new_article_url, recursion_depth + 1)
             elif link["href"].startswith("http://") or link["href"].startswith("https://"):
