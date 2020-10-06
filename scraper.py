@@ -186,7 +186,7 @@ class ScrapeWikiData:
         }
 
 
-class WikiCrawler:
+class WikiCrawler(DB):
     def __init__(self, page_url):
         self.page_url = page_url
         self.csv_file_path = r"assets/data.csv"
