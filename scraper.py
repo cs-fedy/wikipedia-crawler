@@ -5,8 +5,6 @@ from dotenv import load_dotenv
 import tabulate
 import psycopg2
 import re
-import string
-from collections import OrderedDict
 
 load_dotenv()
 
@@ -165,21 +163,7 @@ class ScrapeWikiData:
         filtered_text = re.sub("\[[0-9]*]", "", filtered_text)
         filtered_text = bytes(filtered_text, "UTF-8")
         filtered_text = filtered_text.decode("ascii", "ignore")
-        filtered_text = filtered_text.strip()
-        return [
-            item.strip(string.punctuation)
-            for item in filtered_text.split()
-            if len(item) > 1 and item.lower() not in ["i", "a"]
-        ]
-
-    def __get_ngrams(self, content, n: int):
-        text_words = self.__clean_content(content)
-        ngrams = []
-        for index in range(len(text_words) - n + 1):
-            new_ngram = text_words[index:index + n]
-            if new_ngram not in ngrams:
-                ngrams.append(new_ngram)
-        return ngrams
+        return filtered_text.strip()
 
     def __call__(self, page_url):
         title = self.source_code.find("h1").getText()
@@ -197,7 +181,7 @@ class ScrapeWikiData:
         return {
             "title": title.strip(),
             "page_url": page_url,
-            "first_paragraph": self.__get_ngrams(paragraph, 2),
+            "first_paragraph": self.__clean_content(paragraph),
             "files": files
         }
 
@@ -209,7 +193,7 @@ class WikiCrawler:
         self.internal_link = set()
         self.external_link = set()
         self.recursion_limit = 1
-        # DB.__init__(self)
+        DB.__init__(self)
         self.__get_urls()
 
     @staticmethod
@@ -229,24 +213,23 @@ class WikiCrawler:
         # collect data from current page
         sdw = ScrapeWikiData(soup)
         scraped_data = sdw(page_url)
-        print(scraped_data["first_paragraph"])
-        # page_id = self.seed_page_table(scraped_data)
-        # print(f"@@@ scraping {page_url} done")
-        # for link in soup.select("#mw-content-text .mw-parser-output a"):
-        #     if "href" not in link.attrs:
-        #         continue
-        #     elif ":" in link["href"] or "#" in link["href"]:
-        #         continue
-        #
-        #     if link["href"].startswith("/wiki/"):
-        #         new_article_url = f"https://en.wikipedia.org{link['href']}"
-        #         if new_article_url not in self.internal_link:
-        #             self.internal_link.add(new_article_url)
-        #             self.seed_link_table(page_id, new_article_url)
-        #             if recursion_depth < self.recursion_limit:
-        #                 self.__get_urls(new_article_url, recursion_depth + 1)
-        #     elif link["href"].startswith("http://") or link["href"].startswith("https://"):
-        #         self.external_link.add(link["href"])
+        page_id = self.seed_page_table(scraped_data)
+        print(f"@@@ scraping {page_url} done")
+        for link in soup.select("#mw-content-text .mw-parser-output a"):
+            if "href" not in link.attrs:
+                continue
+            elif ":" in link["href"] or "#" in link["href"]:
+                continue
+
+            if link["href"].startswith("/wiki/"):
+                new_article_url = f"https://en.wikipedia.org{link['href']}"
+                if new_article_url not in self.internal_link:
+                    self.internal_link.add(new_article_url)
+                    self.seed_link_table(page_id, new_article_url)
+                    if recursion_depth < self.recursion_limit:
+                        self.__get_urls(new_article_url, recursion_depth + 1)
+            elif link["href"].startswith("http://") or link["href"].startswith("https://"):
+                self.external_link.add(link["href"])
 
 
 if __name__ == "__main__":
