@@ -56,7 +56,7 @@ class DB:
             CREATE TABLE link(
                 link_id SERIAL PRIMARY KEY,
                 page_id INT,
-                link VARCHAR(255),
+                link TEXT,
                 added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (page_id) REFERENCES page(page_id)); 
         """
@@ -67,7 +67,7 @@ class DB:
             CREATE TABLE file(
                 file_id SERIAL PRIMARY KEY,
                 page_id INT,
-                file_url VARCHAR(255),
+                file_url TEXT,
                 added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (page_id) REFERENCES page(page_id)); 
         """
@@ -88,6 +88,7 @@ class DB:
         seeding_page_query = """ 
                 INSERT INTO page (page_title, page_url, page_content)  
                 VALUES (%s, %s, %s)
+                returning page_id
         """
         self.cursor.execute(seeding_page_query, (title, page_url, first_paragraph))
         page_id = self.cursor.fetchone()[0]
@@ -104,23 +105,23 @@ class DB:
 
         seeding_link_query = """ 
                 INSERT INTO link (page_id, link)  
-                VALUES (%d, %s)
+                VALUES (%s, %s)
         """
         self.cursor.execute(seeding_link_query, (page_id, link))
         self.connection.commit()
         print(f"seeding link table with {link}")
 
-    def seed_file_table(self, page_id, file):
+    def seed_file_table(self, page_id, files):
         if not self.connection:
             return
-
-        seeding_file_query = """ 
-                INSERT INTO file (page_id, link)  
-                VALUES (%d, %s)
-        """
-        self.cursor.execute(seeding_file_query, (page_id, file))
-        self.connection.commit()
-        print(f"seeding link file with {file}")
+        for file in files:
+            seeding_file_query = """ 
+                    INSERT INTO file (page_id, file_url)  
+                    VALUES (%s, %s)
+            """
+            self.cursor.execute(seeding_file_query, (page_id, file))
+            self.connection.commit()
+            print(f"seeding file table with {file}")
 
     def close_connection(self):
         if not self.connection:
@@ -143,7 +144,7 @@ class DB:
 
         row_select_query = f"SELECT * FROM {table_name}"
         self.cursor.execute(row_select_query)
-        rows = [row[0] for row in self.cursor.fetchall()]
+        rows = [row for row in self.cursor.fetchall()]
         columns_select_query = f"SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}';"
         self.cursor.execute(columns_select_query)
         columns = [col[0] for col in self.cursor.fetchall()]
@@ -168,9 +169,9 @@ class ScrapeWikiData:
     def __call__(self, page_url):
         title = self.source_code.find("h1").getText()
         body = self.source_code.select_one("#mw-content-text .mw-parser-output")
-        first_paragraph = [p for p in body.select(".mw-parser-output p")]
+        first_paragraph = [p for p in body.select(".mw-parser-output p") if p.getText().strip() != ""]
         if len(first_paragraph) > 0:
-            paragraph = first_paragraph[1].getText()
+            paragraph = first_paragraph[0].getText()
         else:
             paragraph = "undefined"
         # TODO: check file extension: accept it or no
@@ -199,6 +200,7 @@ class WikiCrawler(DB):
     @staticmethod
     def __request_data(page_url):
         # TODO: handle redirect(server and client side) on requesting a web page
+        # handling redirect: page 221: https://drive.google.com/file/d/1IL3g_wT_BqRtYtc36a6l9vZjxqnJuCxT/view?usp=sharing
         response = requests.get(page_url)
         if response.status_code == 200:
             return response.content
@@ -213,6 +215,7 @@ class WikiCrawler(DB):
         # collect data from current page
         sdw = ScrapeWikiData(soup)
         scraped_data = sdw(page_url)
+        print(scraped_data)
         page_id = self.seed_page_table(scraped_data)
         print(f"@@@ scraping {page_url} done")
         for link in soup.select("#mw-content-text .mw-parser-output a"):
