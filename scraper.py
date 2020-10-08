@@ -231,8 +231,8 @@ class WikiCrawler(DB):
                     self.seed_link_table(page_id, new_article_url)
                     if recursion_depth < self.recursion_limit:
                         self.__get_urls(new_article_url, recursion_depth + 1)
-            elif link["href"].startswith("http://") or link["href"].startswith("https://"):
-                self.external_link.add(link["href"])
+            elif not link["href"].startswith("/w/"):
+                self.external_link.add(link["href"][2:])
 
 
 if __name__ == "__main__":
