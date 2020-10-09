@@ -9,9 +9,6 @@ import re
 load_dotenv()
 
 
-# TODO: use regex and refactor the code
-
-
 class DB:
     def __init__(self):
         self.__POSTGRES_DB = os.getenv("POSTGRES_DB")
@@ -33,12 +30,9 @@ class DB:
             self.cursor = self.connection.cursor()
             print("connected to db successfully")
         except (Exception, psycopg2.Error) as error:
-            print("failed to connect to db", error)
+            raise Exception(f"failed to connect to db {error}")
 
     def create_tables(self):
-        if not self.connection:
-            return
-
         queries = []
         # page(page_id_, page_url, added_in, content)
         page_table_query = """
@@ -51,12 +45,13 @@ class DB:
         """
         queries.append((page_table_query, "page"))
 
-        # link(link_id, page_id*, link, added_in)
+        # link(link_id, page_id*, link, added_in, language)
         link_table_query = """
             CREATE TABLE link(
                 link_id SERIAL PRIMARY KEY,
                 page_id INT,
                 link TEXT,
+                language TEXT,
                 added_in TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (page_id) REFERENCES page(page_id)); 
         """
@@ -81,9 +76,6 @@ class DB:
             print(f"Table {table_name} created successfully in PostgreSQL ")
 
     def seed_page_table(self, record):
-        if not self.connection:
-            return
-
         title, page_url, first_paragraph, files = record.values()
         seeding_page_query = """ 
                 INSERT INTO page (page_title, page_url, page_content)  
@@ -99,22 +91,22 @@ class DB:
         print(f"seeding page table with {title} details done")
         return page_id
 
-    def seed_link_table(self, page_id, link):
-        if not self.connection:
-            return
-
+    def seed_link_table(self, page_id, link, language):
         seeding_link_query = """ 
-                INSERT INTO link (page_id, link)  
-                VALUES (%s, %s)
+                INSERT INTO link (page_id, link, language)  
+                VALUES (%s, %s, %s)
         """
-        self.cursor.execute(seeding_link_query, (page_id, link))
+        self.cursor.execute(seeding_link_query, (page_id, link, language))
         self.connection.commit()
         print(f"seeding link table with {link}")
 
     def seed_file_table(self, page_id, files):
-        if not self.connection:
-            return
         for file in files:
+            get_files_query = f"SELECT file_url from file where file_url == {file}"
+            self.cursor.execute(get_files_query)
+            if len(self.cursor.fetchall()) > 0:
+                continue
+
             seeding_file_query = """ 
                     INSERT INTO file (page_id, file_url)  
                     VALUES (%s, %s)
@@ -124,9 +116,6 @@ class DB:
             print(f"seeding file table with {file}")
 
     def close_connection(self):
-        if not self.connection:
-            return
-
         self.cursor.close()
         self.connection.close()
         print("PostgreSQL connection is closed")
@@ -138,16 +127,19 @@ class DB:
             self.connection.commit()
             print(f"table {table_name} dropped")
 
-    def get_data(self, table_name):
-        if not self.connection:
-            return
-
+    def __get_rows(self, table_name):
         row_select_query = f"SELECT * FROM {table_name}"
         self.cursor.execute(row_select_query)
-        rows = [row for row in self.cursor.fetchall()]
+        return [row for row in self.cursor.fetchall()]
+
+    def __get_columns(self, table_name):
         columns_select_query = f"SELECT column_name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = '{table_name}';"
         self.cursor.execute(columns_select_query)
-        columns = [col[0] for col in self.cursor.fetchall()]
+        return [col[0] for col in self.cursor.fetchall()]
+
+    def show_data(self, table_name):
+        rows = self.__get_rows(table_name)
+        columns = self.__get_columns(table_name)
         print("=" * 28, f"@ rows in {table_name} table @", "=" * 28)
         print(tabulate.tabulate(rows, headers=columns, tablefmt="psql"))
         print("\n")
@@ -194,13 +186,18 @@ class WikiCrawler(DB):
         self.internal_link = set()
         self.external_link = set()
         self.recursion_limit = 1
+        self.native_language = self.__get_article_language(self.page_url)
         DB.__init__(self)
         self.__get_urls()
 
     @staticmethod
+    def __get_article_language(page_url):
+        return page_url[page_url.find("//") + 2: page_url.find(".")]
+
+    @staticmethod
     def __request_data(page_url):
         # TODO: handle redirect(server and client side) on requesting a web page
-        # handling redirect: page 221: https://drive.google.com/file/d/1IL3g_wT_BqRtYtc36a6l9vZjxqnJuCxT/view?usp=sharing
+        # handling redirect: page 221: https://bit.ly/33K2OcG
         response = requests.get(page_url)
         if response.status_code == 200:
             return response.content
@@ -210,14 +207,19 @@ class WikiCrawler(DB):
         if not page_url:
             page_url = self.page_url
             self.internal_link.add(self.page_url)
+
         data = self.__request_data(page_url)
         soup = BeautifulSoup(data, "html.parser")
         # collect data from current page
         sdw = ScrapeWikiData(soup)
         scraped_data = sdw(page_url)
-        print(scraped_data)
         page_id = self.seed_page_table(scraped_data)
         print(f"@@@ scraping {page_url} done")
+
+        # get translations urls
+        if self.__get_article_language(page_url) == self.native_language:
+            self.internal_link |= {link["href"] for link in soup.select("#p-lang a")}
+
         for link in soup.select("#mw-content-text .mw-parser-output a"):
             if "href" not in link.attrs:
                 continue
@@ -228,11 +230,13 @@ class WikiCrawler(DB):
                 new_article_url = f"https://en.wikipedia.org{link['href']}"
                 if new_article_url not in self.internal_link:
                     self.internal_link.add(new_article_url)
-                    self.seed_link_table(page_id, new_article_url)
-                    if recursion_depth < self.recursion_limit:
-                        self.__get_urls(new_article_url, recursion_depth + 1)
             elif not link["href"].startswith("/w/"):
                 self.external_link.add(link["href"][2:])
+
+        for internal_url in self.internal_link:
+            self.seed_link_table(page_id, url, self.__get_article_language(internal_url))
+            if recursion_depth < self.recursion_limit:
+                self.__get_urls(internal_url, recursion_depth + 1)
 
 
 if __name__ == "__main__":
